@@ -1,15 +1,22 @@
 {
   "manifest_version": 3,
   "name": "Video Downloader",
-  "version": "0.1.0",
-  "description": "Download permitted videos through a local helper",
+  "version": "0.2.0",
+  "description": "YouTube video history and local downloads",
   "permissions": [
-    "activeTab",
-    "tabs"
+    "tabs",
+    "storage"
   ],
   "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://music.youtube.com/*",
+    "https://youtu.be/*",
     "http://127.0.0.1:8765/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html"
   }
