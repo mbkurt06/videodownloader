@@ -133,13 +133,15 @@ def batch():
     cancel_event = threading.Event()
     with lock:
         cancel_events[job_id] = cancel_event
-        jobs[job_id].update(active=[], percent=0, speed=0, cancelled=0)
+        jobs[job_id].update(active=[], percent=0, speed=0, cancelled=0, results={})
     def run_batch():
         errors = []
         active = {}
         def one(index, item):
             if cancel_event.is_set():
                 return "cancelled", ""
+            with lock:
+                jobs[job_id]["results"][str(index)] = {"status": "downloading"}
             sub_id = uuid.uuid4().hex
             def progress(data):
                 with lock:
@@ -169,6 +171,7 @@ def batch():
                 except Exception as exc:
                     status, error = "error", str(exc)
                 with lock:
+                    jobs[job_id]["results"][str(index)] = {"status": status, "error": error if status == "error" else ""}
                     active.pop(index, None)
                     jobs[job_id]["active"] = [{"index": k + 1, **v} for k, v in active.items()]
                     jobs[job_id]["speed"] = sum(v.get("speed", 0) for v in active.values())
