@@ -1,5 +1,7 @@
 """Local-only downloader. Start with python app.py; ffmpeg must be installed."""
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import uuid
 from pathlib import Path
@@ -11,6 +13,7 @@ import yt_dlp
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["chrome-extension://*", "http://127.0.0.1:*"]}})
 jobs = {}
+cancel_events = {}
 lock = threading.Lock()
 OUTPUT = Path.home() / "Downloads" / "VideoDownloader"
 OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -70,9 +73,19 @@ def playlist():
     except Exception as exc:
         return jsonify(error=str(exc)), 422
 
-def worker(job_id, url, fmt):
+def worker(job_id, url, fmt, progress=None, cancel_event=None):
     try:
         opts = options()
+        opts.update(retries=3, fragment_retries=3)
+        if cancel_event:
+            def hook(d):
+                if cancel_event.is_set():
+                    raise RuntimeError("İndirme iptal edildi")
+                if progress and d.get("status") == "downloading":
+                    total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                    progress({"percent": round(100 * d.get("downloaded_bytes", 0) / total, 1) if total else 0,
+                              "speed": d.get("speed") or 0})
+            opts["progress_hooks"] = [hook]
         if fmt.startswith("mp3-"):
             bitrate = fmt.split("-")[1]
             opts.update(format="bestaudio/best", postprocessors=[{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": bitrate}])
@@ -117,24 +130,73 @@ def batch():
     job_id = uuid.uuid4().hex
     with lock:
         jobs[job_id] = {"status": "running", "total": len(items), "completed": 0, "failed": 0, "current": ""}
+    cancel_event = threading.Event()
+    with lock:
+        cancel_events[job_id] = cancel_event
+        jobs[job_id].update(active=[], percent=0, speed=0, cancelled=0)
     def run_batch():
         errors = []
-        for index, item in enumerate(items):
-            with lock:
-                jobs[job_id]["current"] = str(index + 1) + "/" + str(len(items))
+        active = {}
+        def one(index, item):
+            if cancel_event.is_set():
+                return "cancelled", ""
             sub_id = uuid.uuid4().hex
-            worker(sub_id, item["url"], item["format_id"])
-            with lock:
-                result = jobs.pop(sub_id, {})
+            def progress(data):
+                with lock:
+                    active[index] = data
+                    jobs[job_id]["active"] = [{"index": k + 1, **v} for k, v in active.items()]
+                    jobs[job_id]["speed"] = sum(v.get("speed", 0) for v in active.values())
+            for attempt in range(2):
+                if cancel_event.is_set():
+                    return "cancelled", ""
+                worker(sub_id, item["url"], item["format_id"], progress, cancel_event)
+                with lock:
+                    result = jobs.pop(sub_id, {})
                 if result.get("status") == "done":
-                    jobs[job_id]["completed"] += 1
-                else:
-                    jobs[job_id]["failed"] += 1
-                    errors.append(str(index + 1) + ": " + result.get("error", "Hata"))
+                    return "done", ""
+                error = result.get("error", "Bilinmeyen hata")
+                if cancel_event.is_set():
+                    return "cancelled", ""
+                if attempt == 0:
+                    time.sleep(2)
+            return "error", error
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(one, i, item): i for i, item in enumerate(items)}
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    status, error = future.result()
+                except Exception as exc:
+                    status, error = "error", str(exc)
+                with lock:
+                    active.pop(index, None)
+                    jobs[job_id]["active"] = [{"index": k + 1, **v} for k, v in active.items()]
+                    jobs[job_id]["speed"] = sum(v.get("speed", 0) for v in active.values())
+                    if status == "done":
+                        jobs[job_id]["completed"] += 1
+                    elif status == "cancelled":
+                        jobs[job_id]["cancelled"] += 1
+                    else:
+                        jobs[job_id]["failed"] += 1
+                        errors.append(str(index + 1) + ": " + error)
+                    finished = jobs[job_id]["completed"] + jobs[job_id]["failed"] + jobs[job_id]["cancelled"]
+                    jobs[job_id]["percent"] = round(100 * finished / len(items), 1)
+                    jobs[job_id]["current"] = str(finished) + "/" + str(len(items))
         with lock:
-            jobs[job_id].update(status="done", current="", errors=errors[:20])
+            jobs[job_id].update(status="cancelled" if cancel_event.is_set() else "done", current="", active=[], speed=0, errors=errors[:20])
+            cancel_events.pop(job_id, None)
     threading.Thread(target=run_batch, daemon=True).start()
     return jsonify(job_id=job_id)
+
+@app.post("/jobs/<job_id>/cancel")
+def cancel_job(job_id):
+    with lock:
+        event = cancel_events.get(job_id)
+        if not event:
+            return jsonify(error="Aktif toplu görev bulunamadı"), 404
+        event.set()
+        jobs[job_id]["status"] = "cancelling"
+    return jsonify(status="cancelling")
 
 @app.post("/download")
 def download():
