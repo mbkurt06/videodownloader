@@ -3,7 +3,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yt_dlp
@@ -49,6 +49,24 @@ def info():
                 if any(f.get("height") == height and f.get("ext") == ext and f.get("vcodec") != "none" for f in data["formats"]):
                     formats.append({"id": f"{ext}-{height}", "label": f"{ext.upper()} · {height}p", "kind": "video"})
         return jsonify(title=data.get("title", ""), formats=formats)
+    except Exception as exc:
+        return jsonify(error=str(exc)), 422
+
+@app.post("/playlist")
+def playlist():
+    url = (request.get_json(silent=True) or {}).get("url", "")
+    if not valid_url(url) or not parse_qs(urlparse(url).query).get("list"):
+        return jsonify(error="Geçerli oynatma listesi bağlantısı girin."), 400
+    try:
+        opts = {**options(), "noplaylist": False, "extract_flat": "in_playlist", "playlistend": 300}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            data = ydl.extract_info(url, download=False)
+        entries = []
+        for item in (data or {}).get("entries", []):
+            if item and item.get("id") and len(item["id"]) == 11:
+                entries.append({"id": item["id"], "title": item.get("title") or "Video",
+                                "url": "https://www.youtube.com/watch?v=" + item["id"]})
+        return jsonify(title=(data or {}).get("title") or "Oynatma listesi", items=entries)
     except Exception as exc:
         return jsonify(error=str(exc)), 422
 
