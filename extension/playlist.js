@@ -62,5 +62,5 @@ async function pollPlaylist(){
 (async()=>{
  const stored=await chrome.storage.local.get(["playlistJob","detectedPlaylist"]);
  if(stored.playlistJob){playlistJob=stored.playlistJob;pollPlaylist()}
- if(stored.detectedPlaylist){pl("playlist-url").value=stored.detectedPlaylist;showTab(true)}
+ if(stored.detectedPlaylist){pl("playlist-url").value=stored.detectedPlaylist;showTab(true);loadPlaylist(stored.detectedPlaylist)}
 })();
