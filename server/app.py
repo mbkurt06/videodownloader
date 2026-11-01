@@ -98,6 +98,44 @@ def worker(job_id, url, fmt):
         with lock:
             jobs[job_id] = {"status": "error", "error": str(exc)}
 
+@app.post("/batch")
+def batch():
+    body = request.get_json(silent=True) or {}
+    items = body.get("items", [])
+    allowed = {"mp3-128", "mp3-192", "mp3-320", "m4a", "best-mp4", "best-mkv", "best-webm"}
+    def format_ok(value):
+        if not isinstance(value, str):
+            return False
+        if value in allowed:
+            return True
+        parts = value.split("-")
+        return len(parts) == 2 and parts[0] in ("mp4", "webm") and parts[1].isdigit() and 0 < int(parts[1]) <= 4320
+    if not isinstance(items, list) or not 1 <= len(items) <= 300:
+        return jsonify(error="1 ile 300 arasında video seçin."), 400
+    if any(not isinstance(item, dict) or not valid_url(item.get("url")) or not format_ok(item.get("format_id")) for item in items):
+        return jsonify(error="Geçersiz video veya format."), 400
+    job_id = uuid.uuid4().hex
+    with lock:
+        jobs[job_id] = {"status": "running", "total": len(items), "completed": 0, "failed": 0, "current": ""}
+    def run_batch():
+        errors = []
+        for index, item in enumerate(items):
+            with lock:
+                jobs[job_id]["current"] = str(index + 1) + "/" + str(len(items))
+            sub_id = uuid.uuid4().hex
+            worker(sub_id, item["url"], item["format_id"])
+            with lock:
+                result = jobs.pop(sub_id, {})
+                if result.get("status") == "done":
+                    jobs[job_id]["completed"] += 1
+                else:
+                    jobs[job_id]["failed"] += 1
+                    errors.append(str(index + 1) + ": " + result.get("error", "Hata"))
+        with lock:
+            jobs[job_id].update(status="done", current="", errors=errors[:20])
+    threading.Thread(target=run_batch, daemon=True).start()
+    return jsonify(job_id=job_id)
+
 @app.post("/download")
 def download():
     body = request.get_json(silent=True) or {}
