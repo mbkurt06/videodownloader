@@ -42,17 +42,22 @@ pl("playlist-download").onclick=async()=>{
  try{
   const data=await post("/batch",{items});playlistJob=data.job_id;
   await chrome.storage.local.set({playlistJob});
-  pl("playlist-message").textContent="Toplu indirme başladı.";
+  pl("playlist-message").textContent="Toplu indirme başladı.";pl("playlist-cancel").classList.remove("hidden");
   pollPlaylist();
  }catch(e){pl("playlist-message").textContent="İndirme hatası: "+clean(e)}
 };
+pl("playlist-cancel").onclick=async()=>{if(!playlistJob)return;pl("playlist-message").textContent="İptal isteği gönderiliyor…";try{await post("/jobs/"+encodeURIComponent(playlistJob)+"/cancel",{})}catch(e){pl("playlist-message").textContent=clean(e)}};
 async function pollPlaylist(){
  const id=playlistJob;if(!id)return;
  try{
   const response=await fetch(API+"/jobs/"+encodeURIComponent(id));const job=await response.json();
   if(!response.ok)throw Error(job.error||"Görev bulunamadı");
-  pl("playlist-message").textContent="Tamamlanan: "+job.completed+" / "+job.total+" | Hatalı: "+job.failed+(job.current?" | İşleniyor: "+job.current:"");
-  if(job.status==="done"){
+  pl("playlist-cancel").classList.remove("hidden");
+  pl("playlist-progress").value=job.percent||0;
+  const speed=job.speed?(" | Hız: "+(job.speed/1048576).toFixed(2)+" MB/sn"):"";
+  const active=(job.active||[]).map(x=>"#"+x.index+": %"+x.percent).join(", ");
+  pl("playlist-message").textContent="Tamamlanan: "+job.completed+" / "+job.total+" | Hatalı: "+job.failed+" | İptal: "+(job.cancelled||0)+" | %"+(job.percent||0)+speed+(active?"\nAktif: "+active:"");
+  if(job.status==="done"||job.status==="cancelled"){pl("playlist-cancel").classList.add("hidden");
    if(job.errors?.length)pl("playlist-message").textContent+="\n"+job.errors.join("\n");
    playlistJob=null;await chrome.storage.local.remove("playlistJob");return;
   }
@@ -61,6 +66,6 @@ async function pollPlaylist(){
 }
 (async()=>{
  const stored=await chrome.storage.local.get(["playlistJob","detectedPlaylist"]);
- if(stored.playlistJob){playlistJob=stored.playlistJob;pollPlaylist()}
+ if(stored.playlistJob){playlistJob=stored.playlistJob;pl("playlist-cancel").classList.remove("hidden");pollPlaylist()}
  if(stored.detectedPlaylist){pl("playlist-url").value=stored.detectedPlaylist;showTab(true);loadPlaylist(stored.detectedPlaylist)}
 })();
