@@ -1,5 +1,5 @@
 const pl=id=>document.getElementById(id);
-let playlistItems=[],playlistJob=null,batchItems=[];
+let playlistItems=[],playlistJob=null,batchItems=[],sizeGeneration=0;
 function indexPrefix(position){
  const pattern=pl("playlist-index").value;
  if(!/^[0-9]{1,8}$/.test(pattern))throw Error("Sıra formatı 1–8 rakam olmalı (ör. 001).");
@@ -14,15 +14,33 @@ function updateIndexPreview(){
 pl("playlist-index").addEventListener("input",()=>{updateIndexPreview();chrome.storage.local.set({playlistIndex:pl("playlist-index").value})});
 updateIndexPreview();
 const formatChoices=[["mp3-192","MP3 192 kbps"],["mp3-128","MP3 128 kbps"],["mp3-320","MP3 320 kbps"],["m4a","M4A"],["best-mp4","MP4 en iyi"],["mp4-1080","MP4 1080p"],["mp4-720","MP4 720p"],["best-webm","WebM en iyi"],["best-mkv","MKV en iyi"]];
+function sizeLabel(item){
+ if(!item.sizes)return item.sizeError?"Boyut alınamadı":"Boyut hesaplanıyor…";
+ const bytes=item.sizes[item.format_id];
+ return bytes==null?"Boyut bilinmiyor":"≈ "+(bytes/1048576).toFixed(1)+" MB";
+}
+async function loadSizes(items){
+ const generation=++sizeGeneration;
+ let next=0;
+ async function runner(){
+  while(next<items.length&&generation===sizeGeneration){
+   const item=items[next++];
+   try{item.sizes=await post("/sizes",{url:item.url});item.sizeError=false}
+   catch(e){item.sizeError=true}
+   if(generation===sizeGeneration&&playlistItems.includes(item))playlistRender();
+  }
+ }
+ await Promise.all([runner(),runner()]);
+}
 function playlistRender(){
  const root=pl("playlist-items");root.replaceChildren();
  for(const [position,item] of playlistItems.entries()){
   const row=document.createElement("div");row.className="playlist-row";
   const check=document.createElement("input");check.type="checkbox";check.checked=item.checked;check.onchange=()=>item.checked=check.checked;row.append(check);
   const img=document.createElement("img");img.src="https://i.ytimg.com/vi/"+item.id+"/mqdefault.jpg";row.append(img);
-  const name=document.createElement("span");name.className="name";const label=document.createElement("span");label.textContent=(/^[0-9]{1,8}$/.test(pl("playlist-index").value)?indexPrefix(position)+" - ":"")+item.title;name.append(label);if(item.status){const detail=document.createElement("small");detail.className="item-error";detail.textContent=({done:"✓ İndirildi",error:"✕ Hata: "+(item.error||"Bilinmeyen hata"),downloading:"⏳ İndiriliyor",cancelled:"İptal edildi"})[item.status]||"";name.append(detail);if(item.status==="error")row.classList.add("failed");if(item.status==="done")row.classList.add("done")}row.append(name);
+  const name=document.createElement("span");name.className="name";const label=document.createElement("span");label.textContent=(/^[0-9]{1,8}$/.test(pl("playlist-index").value)?indexPrefix(position)+" - ":"")+item.title;name.append(label);const size=document.createElement("small");size.className="item-size";size.textContent=sizeLabel(item);name.append(size);if(item.status){const detail=document.createElement("small");detail.className="item-error";detail.textContent=({done:"✓ İndirildi",error:"✕ Hata: "+(item.error||"Bilinmeyen hata"),downloading:"⏳ İndiriliyor",cancelled:"İptal edildi"})[item.status]||"";name.append(detail);if(item.status==="error")row.classList.add("failed");if(item.status==="done")row.classList.add("done")}row.append(name);
   const select=document.createElement("select");for(const [value,label] of formatChoices){const option=document.createElement("option");option.value=value;option.textContent=label;select.append(option)}
-  select.value=item.format_id;select.onchange=()=>item.format_id=select.value;row.append(select);const button=document.createElement("button");button.className="item-download";button.textContent="İndir";button.onclick=()=>startPlaylistBatch([item]);row.append(button);root.append(row);
+  select.value=item.format_id;select.onchange=()=>{item.format_id=select.value;playlistRender()};row.append(select);const button=document.createElement("button");button.className="item-download";button.textContent="İndir";button.onclick=()=>startPlaylistBatch([item]);row.append(button);root.append(row);
  }
 }
 function showTab(playlist){
@@ -44,7 +62,7 @@ async function loadPlaylist(url){
   pl("playlist-title").textContent=result.title+" ("+playlistItems.length+" video)";
   pl("playlist-message").textContent=playlistItems.length>=300?"İlk 300 video listelendi.":"";
   if(batchItems.length){batchItems=batchItems.map(x=>playlistItems.find(y=>y.url===x.url)||x)}
-  playlistRender();showTab(true);
+  playlistRender();showTab(true);loadSizes(playlistItems);
  }catch(e){pl("playlist-message").textContent="Liste hatası: "+clean(e)}
 }
 pl("playlist-load").onclick=()=>loadPlaylist(pl("playlist-url").value.trim());
