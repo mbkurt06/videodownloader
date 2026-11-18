@@ -55,6 +55,55 @@ def info():
     except Exception as exc:
         return jsonify(error=str(exc)), 422
 
+size_cache = {}
+size_cache_lock = threading.Lock()
+
+@app.post("/sizes")
+def sizes():
+    url = (request.get_json(silent=True) or {}).get("url", "")
+    if not valid_url(url):
+        return jsonify(error="Geçersiz video bağlantısı"), 400
+    with size_cache_lock:
+        cached = size_cache.get(url)
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        with yt_dlp.YoutubeDL({**options(), "skip_download": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        duration = info.get("duration") or 0
+        formats = info.get("formats") or []
+        def estimate(f):
+            size = f.get("filesize") or f.get("filesize_approx")
+            if size:
+                return int(size)
+            bitrate = f.get("tbr") or f.get("abr")
+            return int(duration * bitrate * 1000 / 8) if duration and bitrate else None
+        def pick(items):
+            candidates = [f for f in items if estimate(f)]
+            return max(candidates, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0)) if candidates else None
+        audio = pick(f for f in formats if f.get("acodec") != "none" and f.get("vcodec") == "none")
+        result = {}
+        for bitrate in (128, 192, 320):
+            result["mp3-" + str(bitrate)] = int(duration * bitrate * 1000 / 8) if duration else None
+        m4a = pick(f for f in formats if f.get("ext") == "m4a" and f.get("acodec") != "none")
+        result["m4a"] = estimate(m4a or audio) if (m4a or audio) else None
+        for ext in ("mp4", "webm"):
+            audio_ext = "m4a" if ext == "mp4" else "webm"
+            a = pick(f for f in formats if f.get("ext") == audio_ext and f.get("vcodec") == "none")
+            for height in (720, 1080):
+                v = pick(f for f in formats if f.get("ext") == ext and f.get("vcodec") != "none" and (f.get("height") or 0) <= height)
+                result[ext + "-" + str(height)] = (estimate(v) + (estimate(a) or 0)) if v else None
+        for ext in ("mp4", "webm", "mkv"):
+            video = pick(f for f in formats if f.get("vcodec") != "none" and (ext == "mkv" or f.get("ext") == ext))
+            result["best-" + ext] = (estimate(video) + (estimate(audio) or 0)) if video else None
+        with size_cache_lock:
+            if len(size_cache) > 1000:
+                size_cache.clear()
+            size_cache[url] = result
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify(error=str(exc)), 422
+
 @app.post("/playlist")
 def playlist():
     url = (request.get_json(silent=True) or {}).get("url", "")
