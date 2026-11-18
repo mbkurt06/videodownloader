@@ -1,13 +1,26 @@
 const pl=id=>document.getElementById(id);
 let playlistItems=[],playlistJob=null,batchItems=[];
+function indexPrefix(position){
+ const pattern=pl("playlist-index").value;
+ if(!/^[0-9]{1,8}$/.test(pattern))throw Error("Sıra formatı 1–8 rakam olmalı (ör. 001).");
+ const value=Number(pattern)+position;
+ if(value>99999999)throw Error("Sıra numarası çok büyük.");
+ return String(value).padStart(pattern.length,"0");
+}
+function updateIndexPreview(){
+ try{pl("playlist-index-preview").textContent=[0,1,2].map(indexPrefix).join(", ")+"…";pl("playlist-index").setCustomValidity("")}
+ catch(e){pl("playlist-index-preview").textContent=e.message;pl("playlist-index").setCustomValidity(e.message)}
+}
+pl("playlist-index").addEventListener("input",()=>{updateIndexPreview();chrome.storage.local.set({playlistIndex:pl("playlist-index").value})});
+updateIndexPreview();
 const formatChoices=[["mp3-192","MP3 192 kbps"],["mp3-128","MP3 128 kbps"],["mp3-320","MP3 320 kbps"],["m4a","M4A"],["best-mp4","MP4 en iyi"],["mp4-1080","MP4 1080p"],["mp4-720","MP4 720p"],["best-webm","WebM en iyi"],["best-mkv","MKV en iyi"]];
 function playlistRender(){
  const root=pl("playlist-items");root.replaceChildren();
- for(const item of playlistItems){
+ for(const [position,item] of playlistItems.entries()){
   const row=document.createElement("div");row.className="playlist-row";
   const check=document.createElement("input");check.type="checkbox";check.checked=item.checked;check.onchange=()=>item.checked=check.checked;row.append(check);
   const img=document.createElement("img");img.src="https://i.ytimg.com/vi/"+item.id+"/mqdefault.jpg";row.append(img);
-  const name=document.createElement("span");name.className="name";const label=document.createElement("span");label.textContent=item.title;name.append(label);if(item.status){const detail=document.createElement("small");detail.className="item-error";detail.textContent=({done:"✓ İndirildi",error:"✕ Hata: "+(item.error||"Bilinmeyen hata"),downloading:"⏳ İndiriliyor",cancelled:"İptal edildi"})[item.status]||"";name.append(detail);if(item.status==="error")row.classList.add("failed");if(item.status==="done")row.classList.add("done")}row.append(name);
+  const name=document.createElement("span");name.className="name";const label=document.createElement("span");label.textContent=(/^[0-9]{1,8}$/.test(pl("playlist-index").value)?indexPrefix(position)+" - ":"")+item.title;name.append(label);if(item.status){const detail=document.createElement("small");detail.className="item-error";detail.textContent=({done:"✓ İndirildi",error:"✕ Hata: "+(item.error||"Bilinmeyen hata"),downloading:"⏳ İndiriliyor",cancelled:"İptal edildi"})[item.status]||"";name.append(detail);if(item.status==="error")row.classList.add("failed");if(item.status==="done")row.classList.add("done")}row.append(name);
   const select=document.createElement("select");for(const [value,label] of formatChoices){const option=document.createElement("option");option.value=value;option.textContent=label;select.append(option)}
   select.value=item.format_id;select.onchange=()=>item.format_id=select.value;row.append(select);const button=document.createElement("button");button.className="item-download";button.textContent="İndir";button.onclick=()=>startPlaylistBatch([item]);row.append(button);root.append(row);
  }
@@ -39,7 +52,8 @@ pl("playlist-url").onkeydown=e=>{if(e.key==="Enter")loadPlaylist(e.target.value.
 pl("playlist-download").onclick=()=>startPlaylistBatch(playlistItems.filter(x=>x.checked));
 pl("playlist-retry").onclick=()=>startPlaylistBatch(playlistItems.filter(x=>x.status==="error"));
 async function startPlaylistBatch(selected){
- const items=selected.map(x=>({url:x.url,format_id:x.format_id}));
+ let items;
+ try{items=selected.map(x=>({url:x.url,format_id:x.format_id,prefix:indexPrefix(playlistItems.indexOf(x))}))}catch(e){pl("playlist-message").textContent=e.message;return}
  if(!items.length){pl("playlist-message").textContent="İndirilecek video yok.";return}
  if(playlistJob){pl("playlist-message").textContent="İndirme zaten sürüyor.";return}
  try{
@@ -73,7 +87,8 @@ async function pollPlaylist(){
  }catch(e){pl("playlist-message").textContent="Durum alınamadı: "+clean(e);setTimeout(pollPlaylist,5000)}
 }
 (async()=>{
- const stored=await chrome.storage.local.get(["playlistJob","playlistBatch","detectedPlaylist"]);
+ const stored=await chrome.storage.local.get(["playlistJob","playlistBatch","detectedPlaylist","playlistIndex"]);
+ if(stored.playlistIndex&&/^[0-9]{1,8}$/.test(stored.playlistIndex)){pl("playlist-index").value=stored.playlistIndex;updateIndexPreview()}
  if(stored.playlistJob){playlistJob=stored.playlistJob;batchItems=(stored.playlistBatch||[]).map(x=>({...x,id:new URL(x.url).searchParams.get("v"),title:x.url}));pl("playlist-cancel").classList.remove("hidden");pollPlaylist()}
  if(stored.detectedPlaylist){pl("playlist-url").value=stored.detectedPlaylist;showTab(true);loadPlaylist(stored.detectedPlaylist)}
 })();
