@@ -73,9 +73,13 @@ def playlist():
     except Exception as exc:
         return jsonify(error=str(exc)), 422
 
-def worker(job_id, url, fmt, progress=None, cancel_event=None):
+def worker(job_id, url, fmt, progress=None, cancel_event=None, prefix=None):
     try:
         opts = options()
+        if prefix is not None:
+            if not isinstance(prefix, str) or not prefix.isdigit() or not 1 <= len(prefix) <= 8:
+                raise ValueError('Geçersiz dosya sıra numarası')
+            opts['outtmpl'] = str(OUTPUT / (prefix + ' - %(title).180B [%(id)s].%(ext)s'))
         opts.update(retries=3, fragment_retries=3)
         if cancel_event:
             def hook(d):
@@ -125,7 +129,7 @@ def batch():
         return len(parts) == 2 and parts[0] in ("mp4", "webm") and parts[1].isdigit() and 0 < int(parts[1]) <= 4320
     if not isinstance(items, list) or not 1 <= len(items) <= 300:
         return jsonify(error="1 ile 300 arasında video seçin."), 400
-    if any(not isinstance(item, dict) or not valid_url(item.get("url")) or not format_ok(item.get("format_id")) for item in items):
+    if any(not isinstance(item, dict) or not valid_url(item.get("url")) or not format_ok(item.get("format_id")) or (item.get("prefix") is not None and (not isinstance(item["prefix"], str) or not item["prefix"].isdigit() or not 1 <= len(item["prefix"]) <= 8)) for item in items):
         return jsonify(error="Geçersiz video veya format."), 400
     job_id = uuid.uuid4().hex
     with lock:
@@ -151,7 +155,7 @@ def batch():
             for attempt in range(2):
                 if cancel_event.is_set():
                     return "cancelled", ""
-                worker(sub_id, item["url"], item["format_id"], progress, cancel_event)
+                worker(sub_id, item["url"], item["format_id"], progress, cancel_event, item.get("prefix"))
                 with lock:
                     result = jobs.pop(sub_id, {})
                 if result.get("status") == "done":
